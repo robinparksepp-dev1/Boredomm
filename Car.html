@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3D AI Reinforcement Learning Trainer</title>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; font-family: -apple-system, sans-serif; background: #050b14; color: #fff; user-select: none; }
+        #canvas-container { width: 100vw; height: 100vh; display: block; }
+        #dashboard { position: absolute; top: 15px; left: 15px; background: rgba(10, 25, 47, 0.85); border: 2px solid #00b4d8; padding: 15px; border-radius: 12px; width: 280px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); pointer-events: none; }
+        h1 { font-size: 16px; margin: 0 0 10px 0; color: #00b4d8; text-transform: uppercase; }
+        .telemetry { font-family: monospace; font-size: 12px; color: #00f5d4; line-height: 1.5; }
+        #controls { position: absolute; bottom: 25px; left: 50%; transform: translateX(-50%); display: flex; gap: 20px; width: 90%; max-width: 440px; }
+        .btn { flex: 1; padding: 18px; border: none; border-radius: 14px; font-size: 16px; font-weight: bold; color: white; cursor: pointer; text-transform: uppercase; }
+        #btn-penalty { background: #e63946; }
+        #btn-reward { background: #00b4d8; color: #050b14; }
+        #crash-overlay { display: none; position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(230, 57, 70, 0.3); justify-content: center; align-items: center; flex-direction: column; }
+        .msg-box { background: #0a192f; border: 3px solid #e63946; padding: 30px; border-radius: 16px; text-align: center; }
+        .reset-btn { background: #e63946; border: none; color: white; padding: 12px 25px; font-weight: bold; border-radius: 8px; margin-top: 15px; cursor: pointer; }
+    </style>
+    <script src="https://cloudflare.com"></script>
+</head>
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="dashboard">
+        <h1>🏎️ RL Agent Telemetry</h1>
+        <div class="telemetry">
+            <div>Status: <span id="ui-status" style="color:#00f5d4;">TRAINING_ALIVE</span></div>
+            <div>Reward: <span id="ui-reward">0</span> pts</div>
+            <div>Velocity: <span id="ui-speed">0.00</span> units/s</div>
+            <div>Weight: <span id="ui-weight">0.50</span></div>
+        </div>
+    </div>
+
+    <div id="controls">
+        <button id="btn-penalty" class="btn">❌ Penalty</button>
+        <button id="btn-reward" class="btn">➕ Reward</button>
+    </div>
+
+    <div id="crash-overlay">
+        <div class="msg-box">
+            <h2>💥 Agent Crashed</h2>
+            <button class="reset-btn" onclick="resetAgent()">Spawn Next Agent</button>
+        </div>
+    </div>
+
+    <script>
+        let scene, camera, renderer, car;
+        let trackWalls = [];
+        let score = 0, speed = 0.08, neuralWeight = 0.50, isCrashed = false;
+        
+        let trackWaypoints = [
+            new THREE.Vector2(0, 20), new THREE.Vector2(20, 20), new THREE.Vector2(25, 0),
+            new THREE.Vector2(20, -20), new THREE.Vector2(0, -20), new THREE.Vector2(-20, -20),
+            new THREE.Vector2(-25, 0), new THREE.Vector2(-20, 20)
+        ];
+        let currentWaypointIndex = 0;
+
+        function init() {
+            const container = document.getElementById('canvas-container');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050b14);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            container.appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            createEnvironment();
+            spawnCar();
+
+            document.getElementById('btn-reward').addEventListener('click', () => applyReward(true));
+            document.getElementById('btn-penalty').addEventListener('click', () => applyReward(false));
+            animate();
+        }
+
+        function createEnvironment() {
+            scene.add(new THREE.GridHelper(200, 50, 0x415a77, 0x1b263b));
+            const trackPath = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(0, 0, 20), new THREE.Vector3(20, 0, 20), new THREE.Vector3(30, 0, 0),
+                new THREE.Vector3(20, 0, -20), new THREE.Vector3(0, 0, -20), new THREE.Vector3(-20, 0, -20),
+                new THREE.Vector3(-30, 0, 0), new THREE.Vector3(-20, 0, 20)
+            ]);
+            trackPath.closed = true;
+
+            const road = new THREE.Mesh(new THREE.TubeGeometry(trackPath, 64, 4.5, 8, true), new THREE.MeshStandardMaterial({ color: 0x111e38 }));
+            road.scale.set(1, 0.05, 1);
+            scene.add(road);
+        }
+
+        function spawnCar() {
+            car = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.3, 1.6), new THREE.MeshStandardMaterial({ color: 0xffb703 }));
+            body.position.y = 0.25;
+            car.add(body);
+            car.position.set(0, 0, 20);
+            scene.add(car);
+        }
+
+        function applyReward(isPositive) {
+            if(isCrashed) return;
+            score += isPositive ? 10 : -10;
+            neuralWeight = THREE.MathUtils.clamp(neuralWeight + (isPositive ? 0.05 : -0.08), 0.1, 0.9);
+            speed = THREE.MathUtils.clamp(speed + (isPositive ? 0.01 : -0.02), 0.04, 0.22);
+            document.getElementById('ui-reward').innerText = score;
+            document.getElementById('ui-weight').innerText = neuralWeight.toFixed(2);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (!isCrashed && car) {
+                let target = trackWaypoints[currentWaypointIndex];
+                let carPos2D = new THREE.Vector2(car.position.x, car.position.z);
+                if(carPos2D.distanceTo(target) < 6) currentWaypointIndex = (currentWaypointIndex + 1) % trackWaypoints.length;
+
+                let forward = new THREE.Vector3(0, 0, 1).applyQuaternion(car.rotation);
+                let targetDir = new THREE.Vector3(target.x - car.position.x, 0, target.y - car.position.z).normalize();
+                let steer = forward.cross(targetDir).y > 0 ? 1 : -1;
+
+                car.rotation.y += steer * forward.angleTo(targetDir) * 0.03 * (1.5 - neuralWeight);
+                car.translateZ(speed);
+
+                document.getElementById('ui-speed').innerText = (speed * 60).toFixed(2);
+
+                if (Math.abs(car.position.x) > 35 || Math.abs(car.position.z) > 25) {
+                    isCrashed = true;
+                    document.getElementById('ui-status').innerText = "CRASHED";
+                    document.getElementById('crash-overlay').style.display = "flex";
+                }
+
+                camera.position.set(car.position.x, car.position.y + 4, car.position.z - 7);
+                camera.lookAt(car.position);
+            }
+            renderer.render(scene, camera);
+        }
+        window.onload = init;
+    </script>
+</body>
+</html>
